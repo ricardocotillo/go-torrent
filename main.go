@@ -1,11 +1,16 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
+	"net"
 	"net/http"
+	"strconv"
+	"time"
+
+	"rcotillo.tech/torrent_downloader/models"
 )
 
 func main() {
@@ -22,7 +27,7 @@ func main() {
 		panic(err)
 	}
 
-	var mr Response
+	var mr models.Response
 	if err != nil {
 		panic(err)
 	}
@@ -33,6 +38,8 @@ func main() {
 	}
 	t := mr.Data.Movie.Torrents[0]
 
+	fmt.Println("this torrent has " + strconv.Itoa(t.Peers) + " peers")
+
 	r, err = http.Get(t.Url)
 
 	if err != nil {
@@ -40,12 +47,12 @@ func main() {
 	}
 	defer r.Body.Close()
 
-	bt, err := Open(r.Body)
+	bt, err := models.Open(r.Body)
 
 	if err != nil {
 		panic(err)
 	}
-	tf, err := bt.toTorrentFile()
+	tf, err := bt.ToTorrentFile()
 
 	if err != nil {
 		panic(err)
@@ -56,11 +63,47 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	peers, err := tf.requestPeers(peerID, Port)
+	peers, err := tf.RequestPeers(peerID, models.Port)
 
 	if err != nil {
 		panic(err)
 	}
-	fmt.Print(peers)
+	hshake := buildHandcheck(tf, peerID)
+	fmt.Println(peers)
+	fmt.Println(len(hshake))
+	for i, p := range peers {
+		fmt.Println("connection to peer " + strconv.Itoa(i+1))
+		conn, e := net.DialTimeout("tcp", p.String(), 15*time.Second)
+		if e != nil {
+			fmt.Println(e)
+			continue
+		}
 
+		defer conn.Close()
+
+		_, e = conn.Write(hshake)
+		if e != nil {
+			fmt.Println(e)
+			continue
+		}
+
+		defer conn.Close()
+
+		bdata := make([]byte, 1024)
+		conn.Read(bdata)
+		fmt.Println("data from peer " + strconv.Itoa(i+1))
+		fmt.Println(bdata)
+	}
+}
+
+func buildHandcheck(t models.TorrentFile, peerID [20]byte) []byte {
+	pstr := []byte("BitTorrent protocol")
+	pstrlen := len(pstr)
+	buf := []byte{uint8(pstrlen)}
+	buf = append(buf, pstr...)
+	resrv := make([]byte, 8)
+	buf = append(buf, resrv...)
+	buf = append(buf, t.InfoHash[:]...)
+	buf = append(buf, peerID[:]...)
+	return buf
 }

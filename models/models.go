@@ -1,4 +1,4 @@
-package main
+package models
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackpal/bencode-go"
+	"rcotillo.tech/torrent_downloader/commons"
 )
 
 type Torrent struct {
@@ -74,53 +75,37 @@ type TorrentFile struct {
 	Name        string
 }
 
-func (t *TorrentFile) requestPeers(peerID [20]byte, port uint16) ([]Peer, error) {
-	url, err := t.buildTrackerURL(peerID, port)
-	if err != nil {
-		return nil, err
-	}
-	ua, err := net.ResolveUDPAddr("udp", t.Announce)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := net.DialUDP("udp", nil, ua)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	buffer := make([]byte, 1024)
-	doneChan := make(chan error, 1)
+func (t *TorrentFile) RequestPeers(peerID [20]byte, port uint16) ([]Peer, error) {
+	trackers := commons.Trackers
+	apeers := []Peer{}
+	for _, tr := range trackers {
+		url, err := t.buildTrackerURL(peerID, port, tr)
 
-	go func() {
-		nRead, addr, err := conn.ReadFrom(buffer)
+		c := &http.Client{Timeout: 15 * time.Second}
+		resp, err := c.Get(url)
 		if err != nil {
-			doneChan <- err
-			return
+			resp.Body.Close()
+			continue
+		}
+		defer resp.Body.Close()
+		trackerResp := bencodeTrackerResp{}
+		err = bencode.Unmarshal(resp.Body, &trackerResp)
+		if err != nil {
+			return nil, err
 		}
 
-		fmt.Printf("packet-received: bytes=%d from=%s\n",
-			nRead, addr.String())
-
-		doneChan <- nil
-	}()
-
-	c := &http.Client{Timeout: 15 * time.Second}
-	resp, err := c.Get(url)
-	if err != nil {
-		return nil, err
+		peers, err := Unmarshal([]byte(trackerResp.Peers))
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range peers {
+			apeers = append(apeers, p)
+		}
 	}
-	defer resp.Body.Close()
-	fmt.Print(resp.Body)
-	trackerResp := bencodeTrackerResp{}
-	err = bencode.Unmarshal(resp.Body, &trackerResp)
-	if err != nil {
-		return nil, err
-	}
-
-	return Unmarshal([]byte(trackerResp.Peers))
+	return apeers, nil
 }
 
-func (bto bencodeTorrent) toTorrentFile() (TorrentFile, error) {
+func (bto bencodeTorrent) ToTorrentFile() (TorrentFile, error) {
 	infoHash, err := bto.Info.hash()
 	if err != nil {
 		return TorrentFile{}, err
@@ -156,8 +141,8 @@ func (i *bencodeInfo) splitPieceHashes() ([][20]byte, error) {
 	return hashes, nil
 }
 
-func (t *TorrentFile) buildTrackerURL(peerID [20]byte, port uint16) (string, error) {
-	base, err := url.Parse("http://87.253.152.137/announce")
+func (t *TorrentFile) buildTrackerURL(peerID [20]byte, port uint16, d string) (string, error) {
+	base, err := url.Parse(d)
 	if err != nil {
 		return "", err
 	}
@@ -281,4 +266,16 @@ func getUDPAddr(d string) (net.UDPAddr, error) {
 		return net.UDPAddr{}, err
 	}
 	return net.UDPAddr{IP: ip, Port: port}, nil
+}
+
+func (p Peer) String() string {
+	return net.JoinHostPort(p.IP.String(), strconv.Itoa(int(p.Port)))
+}
+
+type Client struct {
+	Conn     net.Conn
+	Choked   bool
+	peer     Peer
+	infoHash [20]byte
+	peerID   [20]byte
 }
