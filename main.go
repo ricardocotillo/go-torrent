@@ -105,5 +105,6 @@ func buildHandcheck(t models.TorrentFile, peerID [20]byte) []byte {
 	buf = append(buf, resrv...)
 	buf = append(buf, t.InfoHash[:]...)
 	buf = append(buf, peerID[:]...)
+	fmt.Println(buf)
 	return buf
 }
